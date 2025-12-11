@@ -1,0 +1,509 @@
+---
+title: "Analysis of Popular Film Data via The Movie Database (TMDb) API"
+author: "Effy Tang & Weiqi Yang"
+date: "2025-12-01"
+output: 
+  pdf_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+# Abstract
+
+The performance of the film industry has become increasingly important in recent years. The aim of this study is to examine how a film's production budget, primary genre, and release year influence its box office performance and audience reception. A dataset of 164 films was compiled, cleaned, and analyzed using statistical and visual methods based on data obtained from the TMDb API. The data showed that, in terms of box-office revenue, films with high budgets tend to correlate with high revenues (r = 0.604). Additionally, the average audience ratings varied significantly by film genre, and there has been a strong trend toward increased popularity of films released in recent years. A Shiny interactive application was developed to provide an interactive tool for further exploring these relationships. The findings of this study highlight both the practical implications of API-based movie data and some of the structural trends and patterns in film performance observed today.
+
+# Introduction
+
+Film production decisions, such as budget allocation, genre selection, and release timing, are made under uncertainty. However, they still have a huge influence on the movie's commercial and critical success. Therefore, it becomes important for both researchers and practitioners in the industry to understand which measurable characteristics are related with high revenue or strong audience reception.
+
+This study addresses three main questions: the extent to which production budget is associated with box-office revenue, whether audience ratings differ systematically across genres, and what temporal patterns characterize the release and popularity of contemporary films. To answer these questions, data were gathered from the TMDb API which provided current metadata on films that are widely watched. The study presents insights integrating data management, statistical visualizations, and interactive tools that reveal the underlying dynamics of popular cinema today.
+
+## Research Question
+
+We investigate **which movie characteristics (production budget, primary genre, and release year) are most strongly associated with a film's commercial success (measured by revenue) and audience reception (measured by vote average)**.
+
+Understanding these relationships can help film studios make more informed decisions about resource allocation, genre selection, and release timing. This analysis uses real-world data from The Movie Database (TMDb), one of the most comprehensive film databases available.
+
+## Data Source
+
+The data for this project comes from **The Movie Database (TMDb) API**, which provides access to information about thousands of movies, including:
+
+- Production budgets and box office revenue
+- User ratings and vote counts  
+- Release dates and genres
+- Popularity metrics
+
+We access this data using the TMDb API endpoint at https://developer.themoviedb.org/docs/getting-started.
+
+## GitHub Repository
+
+The complete code, data, and documentation for this project are available at: https://github.com/effytang/Tang-Yang-Final_project
+
+
+# Data Collection
+
+## Setup
+
+We begin by loading the necessary R packages and setting up our API key.
+
+```{r libraries}
+library(httr)       # For API requests
+library(jsonlite)   # For parsing JSON data
+library(purrr)      # For functional programming
+library(ggplot2)    # For visualizations
+library(scales)     # For formatting axes
+library(RSQLite)    # For database management
+library(shiny)      # For interactive app
+library(dplyr)      # For data manipulation
+
+select <- dplyr::select
+filter <- dplyr::filter
+mutate <- dplyr::mutate
+```
+
+```{r api-setup}
+# Read API key from environment variable (secure method)
+api_key <- Sys.getenv("TMDB_KEY")
+```
+
+## API Functions
+
+We created two main functions to collect data from the TMDb API:
+
+1. `get_popular_movies()` - Retrieves basic information about popular movies
+2. `get_movie_details()` - Gets detailed information (budget, revenue) for specific movies
+
+```{r api-functions}
+# Function to get popular movies from discover endpoint
+get_popular_movies <- function(page = 1) {
+  url <- "https://api.themoviedb.org/3/discover/movie"
+  
+  res <- GET(url, query = list(
+    api_key = api_key,
+    sort_by = "popularity.desc",      
+    page = page,
+    "vote_count.gte" = 100  # Filter for movies with sufficient votes
+  ))
+  
+  json <- content(res, as = "text", encoding = "UTF-8")
+  parsed <- fromJSON(json, simplifyVector = TRUE)
+  
+  return(parsed$results) 
+}
+
+# Function to get detailed movie information
+get_movie_details <- function(movie_id) {
+  url <- paste0("https://api.themoviedb.org/3/movie/", movie_id)
+  
+  res <- GET(url, query = list(api_key = api_key))
+  
+  if (status_code(res) == 200) {
+    json <- content(res, as = "text", encoding = "UTF-8")
+    parsed <- fromJSON(json, simplifyVector = TRUE)
+    return(parsed)
+  } else {
+    return(NULL)
+  }
+}
+```
+
+## Collecting Basic Movie Data
+
+We collect basic information from 10 pages of the API, with each page containing approximately 20 movies, giving us around 200 movies total.
+
+```{r collect-basic, cache=TRUE}
+collect_movies <- function(num_pages = 10) {
+  all_movies <- list()
+  
+  cat("Starting to collect movie data...\n")
+  
+  for (i in 1:num_pages) {
+    cat("Fetching page", i, "of", num_pages, "\n")
+    page_data <- get_popular_movies(page = i)
+    all_movies[[i]] <- page_data
+    Sys.sleep(0.3)  # Respectful rate limiting
+  }
+  
+  movies_basic <- bind_rows(all_movies)
+  cat("\n Successfully collected", nrow(movies_basic), "movies\n")
+  
+  return(movies_basic)
+}
+
+# Collect the data
+movies_basic <- collect_movies(num_pages = 10)
+```
+
+The basic endpoint provides general information like title, release date, and vote average, but **does not include budget and revenue data**. Therefore, we need to make individual API calls for each movie.
+
+## Collecting Detailed Information
+
+To get budget and revenue data, we query each movie individually. This is more time-intensive but necessary for our analysis.
+
+```{r collect-details, cache=TRUE}
+collect_movie_details <- function(movie_ids) {
+  all_details <- list()
+  total <- length(movie_ids)
+  
+  cat("Collecting detailed info for", total, "movies...\n")
+  cat("This may take 1-2 minutes.\n\n")
+  
+  for (i in 1:total) {
+    if (i %% 20 == 0) {
+      cat("Progress:", i, "/", total, "\n")
+    }
+    
+    details <- get_movie_details(movie_ids[i])
+    
+    if (!is.null(details)) {
+      all_details[[i]] <- data.frame(
+        id = details$id,
+        budget = details$budget,
+        revenue = details$revenue,
+        runtime = details$runtime,
+        primary_genre = ifelse(length(details$genres$name) > 0, 
+                               details$genres$name[1], NA)
+      )
+    }
+    
+    Sys.sleep(0.25)  # 4 requests per second
+  }
+  
+  details_df <- bind_rows(all_details)
+  cat("\n Successfully collected details for", nrow(details_df), "movies\n")
+  
+  return(details_df)
+}
+
+# Collect detailed information
+movies_detailed <- collect_movie_details(movies_basic$id)
+```
+
+# Data Management
+
+## Merging Datasets
+
+We merge the basic information with the detailed data and create a `release_year` variable for temporal analysis.
+
+```{r merge-data}
+movies_full <- movies_basic %>%
+  left_join(movies_detailed, by = "id") %>%
+  mutate(release_year = as.integer(substr(release_date, 1, 4))) %>%
+  dplyr::select(id, title, release_date, release_year, 
+         budget, revenue, vote_average, vote_count,
+         runtime, primary_genre, popularity)
+
+cat("Dataset dimensions:", nrow(movies_full), "rows ×", ncol(movies_full), "columns\n")
+```
+
+## Data Cleaning
+
+Many movies in the TMDb database have missing or zero values for budget and revenue (particularly older films or independent productions). We filter these out to ensure our analysis is based on complete financial data.
+
+```{r clean-data}
+movies_clean <- movies_full %>%
+  filter(budget > 0, revenue > 0) %>%
+  filter(!is.na(budget), !is.na(revenue), !is.na(primary_genre))
+
+cat("After cleaning:\n")
+cat("Remaining movies:", nrow(movies_clean), "\n")
+cat("Removed:", nrow(movies_full) - nrow(movies_clean), "movies with missing data\n")
+cat("\nBudget range: $", format(min(movies_clean$budget), big.mark=","), 
+    "to $", format(max(movies_clean$budget), big.mark=","), "\n")
+cat("Revenue range: $", format(min(movies_clean$revenue), big.mark=","), 
+    "to $", format(max(movies_clean$revenue), big.mark=","), "\n")
+cat("Year range:", min(movies_clean$release_year), "-", 
+    max(movies_clean$release_year), "\n")
+```
+
+## SQLite Database
+
+We store the cleaned data in a SQLite database for efficient querying using SQL. This demonstrates data management skills beyond simple data frames.
+
+```{r database}
+# Create and populate SQLite database
+con <- dbConnect(SQLite(), "movies.db")
+dbWriteTable(con, "movies", movies_clean, overwrite = TRUE)
+
+# Verify the database
+cat("\nDatabase created successfully!\n")
+cat("Tables:", dbListTables(con), "\n")
+row_count <- dbGetQuery(con, "SELECT COUNT(*) as count FROM movies")
+cat("Rows in movies table:", row_count$count, "\n")
+```
+
+## Data Exploration with SQL
+
+We use SQL queries to explore our dataset and generate summary statistics.
+
+```{r sql-exploration}
+# Top 5 highest-grossing movies
+cat("=== Top 5 Movies by Revenue ===\n")
+top_revenue <- dbGetQuery(con, 
+  "SELECT title, budget, revenue, release_year 
+   FROM movies 
+   ORDER BY revenue DESC 
+   LIMIT 5")
+print(top_revenue)
+
+# Average budget and revenue by genre
+cat("\n=== Average Budget & Revenue by Genre ===\n")
+genre_stats <- dbGetQuery(con,
+  "SELECT primary_genre, 
+          COUNT(*) as count,
+          ROUND(AVG(budget)) as avg_budget,
+          ROUND(AVG(revenue)) as avg_revenue,
+          ROUND(AVG(vote_average), 2) as avg_rating
+   FROM movies
+   GROUP BY primary_genre
+   ORDER BY count DESC")
+print(genre_stats)
+```
+
+# Analysis and Visualizations
+
+## Budget vs Revenue Relationship
+
+Our first analysis examines the relationship between production budget and box office revenue. Economic theory suggests that higher budgets (spent on talent, special effects, marketing) should lead to higher revenue, but we test this empirically.
+
+```{r budget-revenue-analysis, fig.width=10, fig.height=6}
+# Load data for plotting
+plot_data <- dbGetQuery(con, "SELECT * FROM movies")
+
+# Create scatter plot with regression line
+ggplot(plot_data, aes(x = budget, y = revenue)) +
+  geom_point(aes(color = primary_genre), alpha = 0.6, size = 3) +
+  geom_smooth(method = "lm", se = TRUE, color = "blue", linewidth = 1) +
+  scale_x_continuous(labels = dollar_format(scale = 1e-6, suffix = "M")) +
+  scale_y_continuous(labels = dollar_format(scale = 1e-6, suffix = "M")) +
+  labs(
+    title = "Movie Budget vs Revenue",
+    subtitle = "Higher budgets generally lead to higher revenue",
+    x = "Budget (Millions USD)",
+    y = "Revenue (Millions USD)",
+    color = "Genre"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "right")
+
+# Calculate correlation
+cor_value <- cor(plot_data$budget, plot_data$revenue)
+cat("\nPearson correlation coefficient:", round(cor_value, 3), "\n")
+```
+
+**Finding:** The correlation coefficient of **r = `r round(cor_value, 3)`** indicates a **moderate positive relationship** between budget and revenue. Higher production budgets can be inferred to have a stronger association with larger box office returns. Nevertheless, the revenue fluctuations of high-budget films imply that money invested in production is not the only factor determining sales; narrative quality, casting, marketing, and release timing are probably among the factors contributing to this phenomenon.
+
+The plot shows a significant concentration of low- and mid-budget films, with a small number of outliers having very high revenues, including major franchise releases, highlighting the presence of a small number of exceptionally high-grossing films.
+
+### Budget vs Revenue by Major Genres
+
+To better understand genre-specific patterns, we examine the budget-revenue relationship separately for major genres.
+
+```{r budget-by-genre, fig.width=10, fig.height=7}
+# Select major genres
+major_genres <- c("Action", "Adventure", "Animation", "Drama", "Horror", "Comedy")
+
+plot_data %>%
+  filter(primary_genre %in% major_genres) %>%
+  ggplot(aes(x = budget, y = revenue)) +
+  geom_point(alpha = 0.6, size = 2) +
+  geom_smooth(method = "lm", se = FALSE, color = "blue") +
+  facet_wrap(~primary_genre, scales = "free") +
+  scale_x_continuous(labels = dollar_format(scale = 1e-6, suffix = "M")) +
+  scale_y_continuous(labels = dollar_format(scale = 1e-6, suffix = "M")) +
+  labs(
+    title = "Budget vs Revenue by Genre",
+    x = "Budget (Millions USD)",
+    y = "Revenue (Millions USD)"
+  ) +
+  theme_minimal()
+```
+
+Across all genres, higher budgets tend to correspond with higher revenues, but the strength of this relationship varies. Action, Adventure, and Animation show stronger positive trends where bigger budgets more reliably lead to higher box office performance. Comedy, Drama, and Horror exhibit weaker correlations with wide variability, suggesting that factors other than budget play a larger role in their revenue outcomes. Horror in particular demonstrates that relatively low budget films can still achieve strong financial success.
+
+## Vote Average by Genre
+
+Next, we examine how different genres perform in terms of audience ratings. This helps identify which types of films tend to receive better critical and audience reception.
+
+```{r genre-ratings, fig.width=10, fig.height=6}
+ggplot(plot_data, aes(x = reorder(primary_genre, vote_average, median), 
+                       y = vote_average, fill = primary_genre)) +
+  geom_boxplot(alpha = 0.7, show.legend = FALSE) +
+  coord_flip() +
+  labs(
+    title = "Vote Average Distribution Across Genres",
+    subtitle = "Which genres receive the highest ratings?",
+    x = "Genre",
+    y = "Vote Average (0-10)"
+  ) +
+  theme_minimal()
+```
+
+**Finding:** Crime and Fantasy genres show the highest median ratings, while Drama and Thriller films display notable variability in audience reception. The results indicate that some genres have the capability to receive consistently positive audience responses. Crime, Fantasy, and Drama films tend to achieve higher ratings overall, while there is more fluctuation in ratings for categories like Action and Horror, indicating that quality or audience expectations differ significantly among films in these categories. This variability suggests that certain genres like Action and Horror may be more "hit-or-miss" in terms of audience satisfaction.
+
+## Temporal Trends
+
+Finally, we examine how the number of movies and their average revenue has changed over time.
+
+```{r temporal-trends, fig.width=10, fig.height=6}
+year_summary <- plot_data %>%
+  group_by(release_year) %>%
+  summarise(
+    count = n(),
+    avg_revenue = mean(revenue, na.rm = TRUE)
+  ) %>%
+  filter(count >= 2)
+
+ggplot(year_summary, aes(x = release_year)) +
+  geom_col(aes(y = count), fill = "steelblue", alpha = 0.7) +
+  geom_line(aes(y = avg_revenue / 1e7), color = "red", linewidth = 1) +
+  geom_point(aes(y = avg_revenue / 1e7), color = "red", size = 2) +
+  scale_y_continuous(
+    name = "Number of Movies",
+    sec.axis = sec_axis(~.*10, name = "Avg Revenue (Millions USD)", 
+                        labels = dollar_format(suffix = "M"))
+  ) +
+  labs(
+    title = "Movies Released and Average Revenue by Year",
+    x = "Release Year"
+  ) +
+  theme_minimal()
+```
+
+**Finding:** This visualization shows the number of movies (blue bars, left axis) and average revenue (red line, right axis) by release year. Because our dataset is drawn from the "popular movies" endpoint, it is dominated by recent and upcoming releases, but it also includes a smaller number of classic older films that have remained widely viewed. This leads to a strong clustering in the most recent years, particularly 2024 and 2025, while earlier years appear only sparsely. The peak in average revenue, nearing $2,000M, occurs in an earlier year rather than in the most recent period, and is driven by a few exceptionally high-grossing titles. The uneven distribution of films across years limits our ability to infer long-term trends, meaning that the visualization primarily reflects the behavior of films that are currently popular rather than the entire industry over time.
+
+
+# Interactive Shiny Application
+
+To enable interactive exploration of the data, we created a Shiny web application that allows users to filter movies by genre and release year, with real-time visualization updates.
+
+```{r shiny-app, eval=FALSE}
+library(shiny)
+
+shiny_data <- dbGetQuery(con, "SELECT * FROM movies")
+
+ui <- fluidPage(
+  titlePanel("Interactive Movie Data Explorer"),
+  
+  sidebarLayout(
+    sidebarPanel(
+      selectInput("genre_filter", 
+                  "Select Genre:",
+                  choices = c("All", unique(shiny_data$primary_genre)),
+                  selected = "All"),
+      
+      sliderInput("year_filter",
+                  "Release Year Range:",
+                  min = min(shiny_data$release_year, na.rm = TRUE),
+                  max = max(shiny_data$release_year, na.rm = TRUE),
+                  value = c(min(shiny_data$release_year, na.rm = TRUE),
+                           max(shiny_data$release_year, na.rm = TRUE)),
+                  step = 1),
+      
+      hr(),
+      h4("Filtered Data Summary:"),
+      textOutput("summary_text")
+    ),
+    
+    mainPanel(
+      plotOutput("budget_revenue_plot", height = "400px"),
+      hr(),
+      plotOutput("vote_distribution", height = "300px")
+    )
+  )
+)
+
+server <- function(input, output) {
+  filtered_data <- reactive({
+    data <- shiny_data
+    
+    if (input$genre_filter != "All") {
+      data <- data[data$primary_genre == input$genre_filter, ]
+    }
+    
+    data <- data[data$release_year >= input$year_filter[1] & 
+                 data$release_year <= input$year_filter[2], ]
+    
+    return(data)
+  })
+  
+  output$summary_text <- renderText({
+    data <- filtered_data()
+    paste0(
+      "Movies: ", nrow(data), "\n",
+      "Avg Budget: $", format(round(mean(data$budget)/1e6, 1), big.mark = ","), "M\n",
+      "Avg Revenue: $", format(round(mean(data$revenue)/1e6, 1), big.mark = ","), "M\n",
+      "Avg Rating: ", round(mean(data$vote_average), 2)
+    )
+  })
+  
+  output$budget_revenue_plot <- renderPlot({
+    data <- filtered_data()
+    
+    ggplot(data, aes(x = budget, y = revenue)) +
+      geom_point(aes(color = primary_genre), size = 3, alpha = 0.6) +
+      geom_smooth(method = "lm", se = TRUE, color = "blue") +
+      scale_x_continuous(labels = dollar_format(scale = 1e-6, suffix = "M")) +
+      scale_y_continuous(labels = dollar_format(scale = 1e-6, suffix = "M")) +
+      labs(
+        title = "Budget vs Revenue",
+        x = "Budget (Millions USD)",
+        y = "Revenue (Millions USD)",
+        color = "Genre"
+      ) +
+      theme_minimal()
+  })
+  
+  output$vote_distribution <- renderPlot({
+    data <- filtered_data()
+    
+    ggplot(data, aes(x = vote_average)) +
+      geom_histogram(bins = 20, fill = "steelblue", alpha = 0.7) +
+      labs(
+        title = "Distribution of Vote Averages",
+        x = "Vote Average",
+        y = "Count"
+      ) +
+      theme_minimal()
+  })
+}
+
+shinyApp(ui = ui, server = server)
+```
+
+The Shiny app provides dynamic filtering and instant visualization updates, allowing users to explore patterns within specific genres or time periods. The application provides an additional tool for exploring the dataset interactively, allowing a detailed examination that is not possible with the static results shown in this paper.
+
+# Conclusion
+
+## Summary of Findings
+
+The results of this research offer multiple insights into the performance patterns of contemporary popular films. Our analysis of `r nrow(movies_clean)` popular films from The Movie Database reveals several key insights:
+
+1. **Budget-Revenue Relationship**: Production budget has a moderate positive correlation (r = `r round(cor_value, 3)`) with box office revenue, suggesting that greater financial investment is generally associated with stronger commercial outcomes. However, high-budget films show vast divergence in revenue, making it clear that budget alone is not a good predictor of financial success; narrative quality, marketing strategies, and external market conditions are probably major factors alongside budget.
+
+2. **Genre Performance**: Differences in audience reception based on genre are quite remarkable. Drama, Fantasy, and Animation films are usually rated higher, while there is more fluctuation in ratings for categories like Action and Horror, indicating that quality or audience expectations differ significantly among films in these categories. Action dominates in terms of quantity, while Horror films show high variability in both ratings and revenue.
+
+3. **Temporal Patterns**: The dataset points out that the concentration of popular films in the past few years was very strong, which influenced the annual release count and average revenue distribution. Our dataset reflects the current popularity landscape, with most films being recent or upcoming releases from 2024-2025.
+
+## Limitations
+
+Despite these insights, several limitations should be acknowledged:
+
+- **Selection Bias**: The dataset only comes from popular films in TMDb, which may result in selection bias that makes the sample less representative of the whole film industry, excluding independent or niche productions that might be financially or aesthetically different.
+
+- **Missing Data**: The sample is narrowed down as `r nrow(movies_full) - nrow(movies_clean)` films were excluded due to missing financial data, potentially biasing results towards major studio releases.
+
+- **Genre Simplification**: Using only primary genre classifications simplifies the multi-genre nature of many films, which may hide the effects of cross-genre influences.
+
+- **Temporal Imbalance**: The strong focus on recent releases (2024-2025) limits our ability to draw conclusions about long-term trends in the film industry.
+
+Despite these limitations, this analysis demonstrates how web APIs can provide valuable data for understanding the film industry's commercial and artistic landscape.
+
+```{r cleanup, include=FALSE}
+# Close database connection
+dbDisconnect(con)
+```
