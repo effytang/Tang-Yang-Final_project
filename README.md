@@ -20,7 +20,7 @@ Analysis of 164 popular films from The Movie Database examining relationships be
 ### To replicate with your own API key:
 1. Get a TMDb API key: https://www.themoviedb.org/settings/api
 2. Create `.Renviron` file with: `TMDB_KEY=your_api_key_here`
-3. Restart R and open `FinalProject_Improved.Rmd` in RStudio
+3. Restart R and open `727 final project.Rmd` in RStudio
 4. Click **Knit**
 
 ## Key Findings
