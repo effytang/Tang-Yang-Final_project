@@ -14,7 +14,7 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
 
 # Abstract
 
-The performance of the film industry has become increasingly important in recent years. The aim of this study is to examine how a film's production budget, primary genre, and release year influence its box office performance and audience reception. A dataset of 164 films was compiled, cleaned, and analyzed using statistical and visual methods based on data obtained from the TMDb API. The data showed that, in terms of box-office revenue, films with high budgets tend to correlate with high revenues (r = 0.604). Additionally, the average audience ratings varied significantly by film genre, and there has been a strong trend toward increased popularity of films released in recent years. A Shiny interactive application was developed to provide an interactive tool for further exploring these relationships. The findings of this study highlight both the practical implications of API-based movie data and some of the structural trends and patterns in film performance observed today.
+The performance of the film industry has become increasingly important in recent years. The aim of this study is to examine how a film's production budget, primary genre, and release year influence its box office performance and audience reception. A dataset of 164 films was compiled, cleaned, and analyzed using statistical and visual methods based on data obtained from the TMDb API. The data showed that, in terms of box-office revenue, films with high budgets tend to correlate with high revenues. Additionally, the average audience ratings varied significantly by film genre, and there has been a strong trend toward increased popularity of films released in recent years. A Shiny interactive application was developed to provide an interactive tool for further exploring these relationships. The findings of this study highlight both the practical implications of API-based movie data and some of the structural trends and patterns in film performance observed today.
 
 # Introduction
 
@@ -66,9 +66,10 @@ mutate <- dplyr::mutate
 ```
 
 ```{r api-setup}
-# Read API key from environment variable (secure method)
+# Read API key from environment variable
 api_key <- Sys.getenv("TMDB_KEY")
 ```
+
 
 ## API Functions
 
